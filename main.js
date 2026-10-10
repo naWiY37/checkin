@@ -1,38 +1,72 @@
+const entries = (value) => String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+
+const request = async (url, options, label) => {
+  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(30000) })
+  if (!response.ok) throw new Error(`${label}: HTTP ${response.status}`)
+  let result
+  try {
+    result = await response.json()
+  } catch {
+    throw new Error(`${label}: 接口返回非 JSON 数据，请检查网站是否可访问`)
+  }
+  if (result?.code !== 0) {
+    throw new Error(`${label}: ${result?.message || '接口响应异常'} (code=${result?.code ?? '缺失'}${result?.reason ? ', reason=' + result.reason : ''})`)
+  }
+  return result
+}
+
 const glados = async () => {
   const notice = []
-  if (!process.env.GLADOS) return
-  for (const cookie of String(process.env.GLADOS).split('\n')) {
-    if (!cookie) continue
+  const cookies = entries(process.env.GLADOS)
+  const agents = entries(process.env.GLADOS_UA)
+  if (!cookies.length) throw new Error('请配置 Secret GLADOS，值为登录 GLaDOS 后的完整 Cookie')
+  if (!agents.length) throw new Error('请配置 Secret GLADOS_UA，值为同一登录浏览器的 navigator.userAgent')
+  if (agents.length !== 1 && agents.length !== cookies.length) {
+    throw new Error('GLADOS_UA 必须为一行共用，或按行与 GLADOS 中的账号一一对应')
+  }
+  let failed = 0
+  for (const [index, cookie] of cookies.entries()) {
+    const account = `账号 ${index + 1}`
+    let phase = '签到请求'
     try {
       const common = {
         'cookie': cookie,
         'referer': 'https://glados.cloud/console/checkin',
-        'user-agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0)',
+        'user-agent': agents[index] || agents[0],
       }
-      const action = await fetch('https://glados.cloud/api/user/checkin', {
+      const action = await request('https://glados.cloud/api/user/checkin', {
         method: 'POST',
         headers: { ...common, 'content-type': 'application/json' },
         body: '{"token":"glados.cloud"}',
-      }).then((r) => r.json())
-      if (action?.code) throw new Error(action?.message)
-      const status = await fetch('https://glados.cloud/api/user/status', {
+      }, phase)
+      console.log(`[${account}] Checkin OK: ${action.message || '签到接口返回成功'}`)
+      phase = '签到后状态查询'
+      const status = await request('https://glados.cloud/api/user/status', {
         method: 'GET',
         headers: { ...common },
-      }).then((r) => r.json())
-      if (status?.code) throw new Error(status?.message)
+      }, phase)
+      const leftDays = Number(status?.data?.leftDays)
+      if (status?.data?.leftDays == null || !Number.isFinite(leftDays)) {
+        throw new Error('状态接口缺少有效的 leftDays')
+      }
+      console.log(`[${account}] Left Days ${leftDays}`)
       notice.push(
         'Checkin OK',
         `${action?.message}`,
-        `Left Days ${Number(status?.data?.leftDays)}`
+        `Left Days ${leftDays}`
       )
     } catch (error) {
+      failed += 1
+      process.exitCode = 1
+      console.error(`[${account}] ${phase}失败: ${error.message}`)
       notice.push(
-        'Checkin Error',
+        `Checkin Error (${account}, ${phase})`,
         `${error}`,
         `<${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}>`
       )
     }
   }
+  console.log(`处理完成: ${cookies.length - failed} 个账号签到及状态查询成功，${failed} 个账号处理失败`)
   return notice
 }
 
@@ -104,4 +138,7 @@ const main = async () => {
   await notify(await glados())
 }
 
-main()
+main().catch((error) => {
+  console.error(error.message)
+  process.exitCode = 1
+})
