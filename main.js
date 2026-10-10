@@ -1,6 +1,6 @@
 const entries = (value) => String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 
-const request = async (url, options, label) => {
+const request = async (url, options, label, acceptAlreadyCheckedIn = false) => {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(30000) })
   if (!response.ok) throw new Error(`${label}: HTTP ${response.status}`)
   let result
@@ -9,7 +9,9 @@ const request = async (url, options, label) => {
   } catch {
     throw new Error(`${label}: 接口返回非 JSON 数据，请检查网站是否可访问`)
   }
-  if (result?.code !== 0) {
+  const alreadyCheckedIn = acceptAlreadyCheckedIn && result?.code === 1 &&
+    result?.message === "Today's observation logged. Return tomorrow for more points."
+  if (result?.code !== 0 && !alreadyCheckedIn) {
     throw new Error(`${label}: ${result?.message || '接口响应异常'} (code=${result?.code ?? '缺失'}${result?.reason ? ', reason=' + result.reason : ''})`)
   }
   return result
@@ -38,8 +40,9 @@ const glados = async () => {
         method: 'POST',
         headers: { ...common, 'content-type': 'application/json' },
         body: '{"token":"glados.cloud"}',
-      }, phase)
-      console.log(`[${account}] Checkin OK: ${action.message || '签到接口返回成功'}`)
+      }, phase, true)
+      const checkinResult = action.code === 0 ? 'Checkin OK' : 'Already checked in'
+      console.log(`[${account}] ${checkinResult}: ${action.message || '签到接口返回成功'}`)
       phase = '签到后状态查询'
       const status = await request('https://glados.cloud/api/user/status', {
         method: 'GET',
@@ -51,7 +54,7 @@ const glados = async () => {
       }
       console.log(`[${account}] Left Days ${leftDays}`)
       notice.push(
-        'Checkin OK',
+        checkinResult,
         `${action?.message}`,
         `Left Days ${leftDays}`
       )
